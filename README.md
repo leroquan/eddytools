@@ -1,3 +1,5 @@
+Forked from https://github.com/jk-rieck/eddytools.git !!
+
 # eddytools
 
 Python package to detect, track, sample, cluster, and average eddies and their properties based on ocean model output from the NEMO model on ORCA grids and the MITgcm on cartesian grids. The detection can be based on the Okubo-Weiss parameter or Sea Surface Height.  
@@ -11,7 +13,7 @@ The package works based on output loaded with  `load_xorca_dataset` from the [xo
 
 ~~~bash
 # clone the git repository
-git clone https://github.com/jk-rieck/eddytools.git
+git clone https://github.com/leroquan/eddytools.git
 cd eddytools
 # create and activate the environment
 conda env create -f environment.yml

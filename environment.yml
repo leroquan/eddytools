@@ -246,6 +246,6 @@ dependencies:
   - zlib=1.2.13=h166bdaf_4
   - zstd=1.5.2=h6239696_4
   - pip:
-      - eddytools==0.0.0
+      - eddytools==0.3
       - xorca==0.0.0
 prefix: /home/jan/miniconda3/envs/eddytools

@@ -160,8 +160,8 @@ def horizontal(data, metrics, int_param, weights=None, avoid_regrid=False):
             e1f = 'dxV'
             e2f = 'dyU'
             fmask = 'maskZ'
-        add_lon = 200e3
-        add_lat = 100e3
+        add_lon = 0
+        add_lat = 0
     elif latlon:
         if o:
             llon_cc = 'llon_cc'

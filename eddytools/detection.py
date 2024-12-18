@@ -1166,9 +1166,14 @@ def detect_OW(data, det_param, ow_var, vort_var,
     # latlon grid
     if det_param['grid'] == 'latlon':
         data, det_param = monotonic_lon(data, det_param)
+
     # Masking shallow regions and cut out the region specified in `det_param`
-    OW = maskandcut(data, ow_var, det_param, regrid_avoided=regrid_avoided)
-    vort = maskandcut(data, vort_var, det_param, regrid_avoided=regrid_avoided)
+    #Edit AL: removed this since useless in the case of lakes
+    #OW = maskandcut(data, ow_var, det_param, regrid_avoided=regrid_avoided)
+    #vort = maskandcut(data, vort_var, det_param, regrid_avoided=regrid_avoided)
+
+    OW = data[ow_var]
+    vort = data[vort_var]
     OW_thr_name = det_param['OW_thr_name']
     # Define the names of the grid cell sizes depending on the model
     if det_param['model'] == 'MITgcm':
@@ -1177,16 +1182,22 @@ def detect_OW(data, det_param, ow_var, vort_var,
     if det_param['model'] == 'ORCA':
         e1f_name = 'e1f'
         e2f_name = 'e2f'
-    e1f = maskandcut(data, e1f_name, det_param, regrid_avoided=regrid_avoided)
-    e2f = maskandcut(data, e2f_name, det_param, regrid_avoided=regrid_avoided)
+
+    # Edit AL: removed this since useless in the case of lakes
+    #e1f = maskandcut(data, e1f_name, det_param, regrid_avoided=regrid_avoided)
+    #e2f = maskandcut(data, e2f_name, det_param, regrid_avoided=regrid_avoided)
+    e1f = data[e1f_name]
+    e2f = data[e2f_name]
     if len(np.shape(data[OW_thr_name])) > 1:
         # If the Okubo-Weiss threshold is 2D, use `maskandcutOW` masking etc.
-        OW_thr = maskandcut(data, OW_thr_name, det_param,
-                            regrid_avoided=regrid_avoided)
+        # Edit AL: removed this since useless in the case of lakes
+        #OW_thr = maskandcut(data, OW_thr_name, det_param, regrid_avoided=regrid_avoided)
+        OW_thr = data[OW_thr_name]
         OW_thr = OW_thr * (det_param['OW_thr_factor'])
     else:
         # Else just use scalar from `det_param`
         OW_thr = det_param['OW_thr'] * (det_param['OW_thr_factor'])
+
     if use_mp:
         OW = OW.compute()
         vort = vort.compute()
@@ -1438,9 +1449,6 @@ def detect_UV(data, det_param, u_var, v_var, speed_var,
         raise ValueError('Cannot use dask_bags and multiprocessing at the'
                          + 'same time. Set either `use_bags` or `use_mp`'
                          + 'to `False`.')
-    if regrid_avoided == True:
-        raise ValueError("regrid_avoided cannot be used in combination"
-                         + "with detection based on SSH (yet).")
     # Verify that the specified region lies within the dataset provided
     if (det_param['lon1'] < np.around(data['lon'].min())
         or det_param['lon2'] > np.around(data['lon'].max())):
@@ -1473,18 +1481,25 @@ def detect_UV(data, det_param, u_var, v_var, speed_var,
     if det_param['grid'] == 'latlon':
         data, det_param = monotonic_lon(data, det_param)
     # Masking shallow regions and cut out the region specified in `det_param`
-    U = maskandcut(data, u_var, det_param)
-    V = maskandcut(data, v_var, det_param)
-    SPEED = maskandcut(data, speed_var, det_param)
+    #U = maskandcut(data, u_var, det_param)
+    #V = maskandcut(data, v_var, det_param)
+    #SPEED = maskandcut(data, speed_var, det_param)
+    U = data[u_var]
+    V = data[v_var]
+    SPEED = data[speed_var]
     # Define the names of the grid cell sizes depending on the model
     if det_param['model'] == 'MITgcm':
-        e1f_name = 'dxV'
-        e2f_name = 'dyU'
+        e1f_name = 'dxC'
+        e2f_name = 'dyC'
     if det_param['model'] == 'ORCA':
         e1f_name = 'e1f'
         e2f_name = 'e2f'
-    e1f = maskandcut(data, e1f_name, det_param)
-    e2f = maskandcut(data, e2f_name, det_param)
+    print('step2')
+    #e1f = maskandcut(data, e1f_name, det_param)
+    #e2f = maskandcut(data, e2f_name, det_param)
+    e1f = data[e1f_name]
+    e2f = data[e2f_name]
+    print('step3')
     if use_mp:
         U = U.compute()
         V = V.compute()
@@ -1528,13 +1543,20 @@ def detect_UV(data, det_param, u_var, v_var, speed_var,
                                  ,seeds_bag)
         eddies = detection.compute()
     else:
+        print('step3.0')
         eddies = {}
+        print('step3.1')
         U = U.compute()
+        print('step3.2')
         V = V.compute()
+        print('step3.3')
         SPEED = SPEED.compute()
+        print('step4')
         e1f = e1f.values
         e2f = e2f.values
+        print('step5')
         for tt in np.arange(0, len(U['time'])):
+            print('step5')
             steps = np.around(np.linspace(0, len(U['time']), 10))
             if tt in steps:
                 print('detection at time step ', str(tt + 1), ' of ',

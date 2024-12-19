@@ -944,6 +944,7 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
             # find the velocity minimum within the searching area defined by
             # "b" around the points that satisfy the first two constraints
             if var != 0:
+                print('Found something')
                 # velocity magnitude, latitude and longitude within the
                 # searching area
                 srch = speed[i-b:i+b, indx[ii]-b:indx[ii]+1+b]

@@ -7,6 +7,7 @@ needs to have the same structure.
 
 import numpy as np
 import pandas as pd
+from matplotlib.path import Path
 from scipy import ndimage
 from scipy.signal import find_peaks
 import cftime as cft
@@ -259,14 +260,14 @@ def compute_psi(u_psi, v_psi, dx, dy):
     lx = np.shape(u_psi)[0]
     ly = np.shape(u_psi)[1]
     # itegrate first row of v along longitude (first term of eq.A2)
-    cx = np.cumsum(v_psi[0, :]) * dx[0, :]
+    cx = np.nancumsum(v_psi[0, :]) * dx[0, :]
     # integrate first column of u along latitude (second term of eq.A3)
-    cy = np.cumsum(u_psi[:, 0]) * dy[:, 0]
+    cy = np.nancumsum(u_psi[:, 0]) * dy[:, 0]
     # compute streamfunction
     # PSI from integrating v firts and then u
-    psi_xy = (-cx[None, :] + np.cumsum(u_psi, axis=0) * dy)
+    psi_xy = (-cx[None, :] + np.nancumsum(u_psi, axis=0) * dy)
     # PSI from integrating u first and then v
-    psi_yx = (-np.cumsum(v_psi, axis=1) * dx + cy[:, None])
+    psi_yx = (-np.nancumsum(v_psi, axis=1) * dx + cy[:, None])
     # final PSI as average between the two
     return (psi_xy + psi_yx) / 2
 
@@ -274,15 +275,15 @@ def compute_psi(u_psi, v_psi, dx, dy):
 def inpolygon(point_i, point_j, x, y):
     p = np.array([x, y]).T
     hullp = ConvexHull(p)
-    poly = plt.Polygon(p[hullp.vertices, :])
-    return poly.contains_point(np.array([point_i, point_j]))
+    poly_path = Path(p[hullp.vertices])
+    return poly_path.contains_point([point_i, point_j])
 
 
 def inpolygon2D(points_i, points_j, x, y):
     p = np.array([x, y]).T
     hullp = ConvexHull(p)
-    poly = plt.Polygon(p[hullp.vertices, :])
-    return poly.contains_points(np.array([points_i, points_j]).T)
+    poly_path = Path(p[hullp.vertices, :])
+    return poly_path.contains_points(np.array([points_i, points_j]).T)
 
 
 def interpolate_limits(pt_i, pt_j, lon, lat, dkm, vel, direct):
@@ -323,7 +324,8 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
     dkm = 0.05 * (lon[c_j, 1] - lon[c_j, 0])
     # compute contourlines of the streamfunction field (100 contours)
     cg = contour_generator(lon, lat, psi)
-    C = [cg.lines(np.linspace(np.min(psi), np.max(psi), 100)[i]) for i in np.arange(100)]
+    C = [cg.lines(np.linspace(np.nanmin(psi), np.nanmax(psi), 100)[i]) for i in np.arange(100)]
+    
     # intialize the two variables
     eddy_lim = []
     largest_curve=[]
@@ -342,7 +344,7 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
             isolines[i]["y"] = []
             isolines[i]["x"] = list(C[ii][j][:, 0])
             isolines[i]["y"] = list(C[ii][j][:, 1])
-            isolines_max.append(np.max(isolines[i]["y"]))
+            isolines_max.append(np.nanmax(isolines[i]["y"]))
             i += 1
         ii += 1
         try:
@@ -354,6 +356,8 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
     # closed contour across which velocity increases will also be the largest
     # one (it's the one which extend further north).
     sorted_iso = np.argsort(isolines_max)[::-1]
+    print(f"lenght iso: {len(sorted_iso)}")
+    
     # restart the counter and initialize the two flags
     i = 0
     closed_indx = 0 # set to 1 when eddy shape is found
@@ -369,13 +373,16 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
         # 1) closed contours
         # 2) detected eddy center inside the polygon
         if ((len(xdata) < 3) | (len(ydata) < 3)):
+            print('xx Contour is not closed.')
             i += 1
             continue
         try:
             inpo = inpolygon(ec_lon, ec_lat, xdata, ydata)
-        except:
+        except Exception as e:
+            print(f'Error: {e}')
             inpo = False
         if (((xdata[0] == xdata[-1]) & (ydata[0] == ydata[-1])) & inpo):
+            print('Contour is closed.')
             # find the contour extremes
             Nj = np.max(ydata)
             Ni = np.max(xdata[int(np.where(ydata==Nj)[0][0])])
@@ -427,8 +434,10 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
     # in case velocity doesn't increase across the closed contour, eddy shape
     # is defined simply as the largest closed contour
     if ((eddy_lim==[]) & (largest_curve!=[])):
+        print('Largest closed contour selected')
         eddy_lim = largest_curve
     if eddy_lim==[]:
+        print('None')
         return None, None, None
     else:
         mask = inpolygon2D(lon.flatten(), lat.flatten(), eddy_lim[0], eddy_lim[1])
@@ -879,6 +888,7 @@ def detect_SSH_core(data, det_param, SSH, t, ssh_crits, e1f, e2f,
 
 def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
                    regrid_avoided=False):
+    print('detect_UV_core')
     if regrid_avoided == True:
         raise ValueError("regrid_avoided cannot be used (yet).")
     u = U.isel(time=t).values
@@ -896,6 +906,7 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
     # initialise eddy counter & output dict
     e = 0
     eddi = {}
+    
     for i in np.arange(borders, len(v[:, 0])-borders+1):
         wrk = v[i, :]
         # reversal of direction in V
@@ -941,32 +952,44 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
                     #                (lat[i, indx[ii]+1], lon[i, indx[ii]+1])])
                 else:
                     var=0
+                    
             # find the velocity minimum within the searching area defined by
             # "b" around the points that satisfy the first two constraints
             if var != 0:
-                print('Found something')
+                
+                #print(f'u or v increases "a={a}" points away from point of index ({i},{ii}). Searching for minima in {b} cells around...')
+                
                 # velocity magnitude, latitude and longitude within the
                 # searching area
                 srch = speed[i-b:i+b, indx[ii]-b:indx[ii]+1+b]
                 slat = lat[i-b:i+b, indx[ii]-b:indx[ii]+1+b]
                 slon = lon[i-b:i+b, indx[ii]-b:indx[ii]+1+b]
                 # position of the velocity minimum within the searching area
-                X, Y = np.where(srch == np.min(srch))
-                # second searching area centered around the velocity minimum
-                # (bound prevents this area from extending outside the domain)
-                srch2 = speed[int(max((i-b)+(X-1)-b, 1)):int(min((i-b)+(X-1)+b, bounds[0])),
-                              int(max((indx[ii]-b)+(Y-1)-b, 1)):int(min((indx[ii]-b)+(Y-1)+b, bounds[1]))]
-                # if the two minima coincide then it is a local minima
-                if (np.min(srch2) != np.min(srch)):
+                X, Y = np.where(srch == np.nanmin(srch))               
+                
+                if len(X) == 1:
+                    # second searching area centered around the velocity minimum
+                    # (bound prevents this area from extending outside the domain)
+                    srch2 = speed[int(max((i-b)+(X-1)-b, 1)):int(min((i-b)+(X-1)+b, bounds[0])),
+                                  int(max((indx[ii]-b)+(Y-1)-b, 1)):int(min((indx[ii]-b)+(Y-1)+b, bounds[1]))]
+                    # if the two minima coincide then it is a local minima
+                    if (np.nanmin(srch2) != np.nanmin(srch)):
+                        var = 0
+                    #else:
+                    #    eddy_c.append([(slat[X, Y][0], slon[X, Y][0])])
+                else:
                     var = 0
-                #else:
-                #    eddy_c.append([(slat[X, Y][0], slon[X, Y][0])])
+    
+            
             # check the rotation of the vectors along the boundary of the area
             # "a-1" around the points which satisfy the first three constraints
             d = a - 1
             if var != 0:
                 # indices of the estimated center in the large domain
                 i1, i2 = np.where((lat == slat[X, Y]) & (lon == slon[X, Y]))
+                
+                #print(f'Local minima found in indices ({i1},{i2}). Looking for rotation...')
+                
                 # velocities within "a-1" points from the estimated center
                 u_small = u[int(max(i1-d, 1)):int(min(i1+d+1, bounds[0])),
                             int(max(i2-d, 1)):int(min(i2+d+1, bounds[1]))]
@@ -997,6 +1020,9 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
                     # apply the constraint only if complete rotation and not
                     # all vectors in the fourth quadrant
                     if ((spin.size != 0) & (spin.size != quadrants.size)):
+                        
+                        #print(f"There is complete rotation !! Checking if it's uniform...")
+                        
                         # if vectors start in 4 quadrant, then I add 4 to all
                         # quandrant positions from the first 1 occurrence
                         if spin[0] == 0:
@@ -1010,6 +1036,10 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
                         # - no backward rotation
                         if ((np.where(np.diff(quadrants) > 1)[0].size == 0)
                             & (np.where(np.diff(quadrants) < 0)[0].size == 0)):
+
+                            print(f'The rotation is pretty uniform, no weird thing happening there. Looking for eddy boundaries...')
+                            print(f'Local minima found in indices ({i1},{i2}). time={t}')
+                            
                             u_large = u[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
                                         int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
                             v_large = v[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
@@ -1027,12 +1057,14 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
                             psi = compute_psi(u_large, v_large, e1f_large, e2f_large)
                             eddy_i, eddy_j, eddy_mask = get_eddy_indeces(lon_large, lat_large,
                                                                          slon[X, Y][0], slat[X, Y][0], psi, speed_large)
+
                             if ((np.shape(eddy_i)!=()) & (np.shape(eddy_j)!=()) & (np.shape(eddy_mask)!=())):
+                                print(f'This never happens.')
                                 eddi[e] = {}
                                 eddi[e]["lon"] = slon[X, Y]
                                 eddi[e]["lat"] = slat[X, Y]
-                                j_min = (data.lat.where(data.lat == np.min(lat_large), other=0) ** 2).argmax().values
-                                i_min = (data.lon.where(data.lon == np.min(lon_large), other=0) ** 2).argmax().values
+                                j_min = (data.lat.where(data.lat == np.nanmin(lat_large), other=0) ** 2).argmax().values
+                                i_min = (data.lon.where(data.lon == np.nanmin(lon_large), other=0) ** 2).argmax().values
                                 eddi[e]['eddy_j'] = eddy_j + j_min
                                 eddi[e]['eddy_i'] = eddy_i + i_min
                                 eddi[e]['time'] = U.isel(time=t).time.values
@@ -1495,12 +1527,10 @@ def detect_UV(data, det_param, u_var, v_var, speed_var,
     if det_param['model'] == 'ORCA':
         e1f_name = 'e1f'
         e2f_name = 'e2f'
-    print('step2')
     #e1f = maskandcut(data, e1f_name, det_param)
     #e2f = maskandcut(data, e2f_name, det_param)
     e1f = data[e1f_name]
     e2f = data[e2f_name]
-    print('step3')
     if use_mp:
         U = U.compute()
         V = V.compute()
@@ -1544,20 +1574,13 @@ def detect_UV(data, det_param, u_var, v_var, speed_var,
                                  ,seeds_bag)
         eddies = detection.compute()
     else:
-        print('step3.0')
         eddies = {}
-        print('step3.1')
         U = U.compute()
-        print('step3.2')
         V = V.compute()
-        print('step3.3')
         SPEED = SPEED.compute()
-        print('step4')
         e1f = e1f.values
         e2f = e2f.values
-        print('step5')
         for tt in np.arange(0, len(U['time'])):
-            print('step5')
             steps = np.around(np.linspace(0, len(U['time']), 10))
             if tt in steps:
                 print('detection at time step ', str(tt + 1), ' of ',

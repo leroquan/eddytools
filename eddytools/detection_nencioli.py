@@ -25,6 +25,82 @@ except:
     print("Working without dask bags.")
 
 
+def define_detection_parameter(str_start_time, str_end_time, data_aligned, grid_resolution, a, b, rad)
+    return detection_parameters = {
+            "model": "MITgcm",
+            "grid": "cartesian",
+            "hemi": "north",
+            "start_time": str_start_time,  # time range start
+            "end_time": str_end_time,  # time range end
+            "calendar": "standard",  # calendar, must be either 360_day or standard
+            "lon1": data_aligned.lon.values.min(),  # minimum longitude of detection region
+            "lon2": data_aligned.lon.values.max(),  # maximum longitude
+            "lat1": data_aligned.lat.values.min(),  # minimum latitude
+            "lat2": data_aligned.lat.values.max(),  # maximum latitude
+            "res": grid_resolution,  # resolution of the fields in km
+            "min_dep": 1,  # minimum ocean depth where to look for eddies in m
+            "no_long": False,  # If True, elongated shapes will not be considered
+            "no_two": False,  # If True, eddies with two minima in the OW
+            # parameter and a OW > OW_thr in between  will not
+            # be considered
+            "a": a, # u/v increase "a" points away from reversal
+            "b": b, # find the velocity minimum within the searching area defined by
+                    # "b" around the points that satisfy the first two constraints
+            "rad": rad, # define the window in which eddy it looks for the eddy limits
+        }
+
+def select_date_and_depth(str_start_time: str, str_end_time:str, selected_depth_index: int = 0)   
+    start_date_analysis = np.datetime64(str_start_time)
+    end_date_analysis = np.datetime64(str_end_time)
+    
+    data_cropped = data.sel(time=slice(start_date_analysis, end_date_analysis))
+    data_cropped = data_cropped.isel(Z=0)
+
+    return data_cropped
+
+    
+def format_data(data: xrarray.Dataset):
+    temp_ini = data.THETA.isel(time=0)
+    mask = temp_ini.where(abs(temp_ini) > 1e-10).values
+
+    VVEL_new = (
+    data["VVEL"]
+        .rename({"YG": "lat", "XC": "lon", "Z": "Depth"})
+        .assign_coords(lat=data["YC"].values)
+    )
+    UVEL_new = (
+        data["UVEL"]
+        .rename({"XG": "lon", "YC": "lat", "Z": "Depth"})
+        .assign_coords(lon=data["XC"].values)
+    )
+    
+    data_aligned = xr.Dataset(
+        {
+            "UVEL": mask*UVEL_new,
+            "VVEL": mask*VVEL_new,
+        },
+        coords={
+            "lon": data["XC"].values,
+            "lat": data["YC"].values,
+            "Depth": data["Z"].values,
+        },
+    )
+    
+    data_aligned["SPEED"] = np.sqrt(data_aligned["UVEL"] ** 2 + data_aligned["VVEL"] ** 2)
+
+    return data_aligned
+
+
+def preprocess_inputs(str_start_time, str_end_time, data):
+    data_cropped = select_date_and_depth(
+                                str_start_time, 
+                                str_end_time, 
+                                selected_depth_index)
+
+    return format_data(data_cropped)
+
+
+    
 def compute_psi(u_psi, v_psi, dx, dy):
     # compute PSI to get eddy area
     # Indices for domain size
@@ -63,6 +139,7 @@ def interpolate_limits(pt_i, pt_j, lon, lat, dkm, vel, direct):
     # find the closest grid point to the curve extreme
     dist = np.sqrt((lon - pt_i)**2 + (lat - pt_j)**2)
     d_j, d_i = np.where(dist == np.min(dist))
+    d_j, d_i =  d_j[0], d_i[0] 
     n = 4 # at least 4 points away to avoid a qhull precision warning!!!
     # resize coordinate and velocity matrices
     svel = vel[int(np.max([d_j-n, 1])):int(np.min([d_j+n, np.shape(vel)[0]])),
@@ -143,12 +220,14 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
         # 1) closed contours
         # 2) detected eddy center inside the polygon
         if ((len(xdata) < 3) | (len(ydata) < 3)):
-            print('xx Contour is not closed.')
+            #print('xx Contour is not closed.')
             i += 1
             continue
         try:
             inpo = inpolygon(ec_lon, ec_lat, xdata, ydata)
         except Exception as e:
+            print(f"ec_lon={ec_lon}, ec_lat={ec_lat}")
+            print('Error in inpolygon')
             print(f'Error: {e}')
             inpo = False
         if (((xdata[0] == xdata[-1]) & (ydata[0] == ydata[-1])) & inpo):
@@ -210,6 +289,7 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
         print('None')
         return None, None, None
     else:
+        print('Found eddy limits')
         mask = inpolygon2D(lon.flatten(), lat.flatten(), eddy_lim[0], eddy_lim[1])
         eddy_mask = mask.reshape(np.shape(lon))
         eddy_j = np.where(eddy_mask)[0]

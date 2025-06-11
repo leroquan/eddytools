@@ -8,6 +8,7 @@ needs to have the same structure.
 import numpy as np
 import pandas as pd
 from matplotlib.path import Path
+import xarray as xr
 from scipy import ndimage
 from scipy.signal import find_peaks
 import cftime as cft
@@ -25,8 +26,8 @@ except:
     print("Working without dask bags.")
 
 
-def define_detection_parameter(str_start_time, str_end_time, data_aligned, grid_resolution, a, b, rad)
-    return detection_parameters = {
+def define_detection_parameter(str_start_time, str_end_time, data_aligned, grid_resolution, a, b, rad):
+    return {
             "model": "MITgcm",
             "grid": "cartesian",
             "hemi": "north",
@@ -49,7 +50,7 @@ def define_detection_parameter(str_start_time, str_end_time, data_aligned, grid_
             "rad": rad, # define the window in which eddy it looks for the eddy limits
         }
 
-def select_date_and_depth(str_start_time: str, str_end_time:str, selected_depth_index: int = 0)   
+def select_date_and_depth(data, str_start_time: str, str_end_time:str, selected_depth_index: int = 0):
     start_date_analysis = np.datetime64(str_start_time)
     end_date_analysis = np.datetime64(str_end_time)
     
@@ -59,7 +60,7 @@ def select_date_and_depth(str_start_time: str, str_end_time:str, selected_depth_
     return data_cropped
 
     
-def format_data(data: xrarray.Dataset):
+def format_data(data):
     temp_ini = data.THETA.isel(time=0)
     mask = temp_ini.where(abs(temp_ini) > 1e-10).values
 
@@ -91,11 +92,11 @@ def format_data(data: xrarray.Dataset):
     return data_aligned
 
 
-def preprocess_inputs(str_start_time, str_end_time, data):
-    data_cropped = select_date_and_depth(
+def preprocess_inputs(str_start_time, str_end_time, data, depth_index):
+    data_cropped = select_date_and_depth(data,
                                 str_start_time, 
                                 str_end_time, 
-                                selected_depth_index)
+                                depth_index)
 
     return format_data(data_cropped)
 
@@ -203,7 +204,7 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
     # closed contour across which velocity increases will also be the largest
     # one (it's the one which extend further north).
     sorted_iso = np.argsort(isolines_max)[::-1]
-    print(f"lenght iso: {len(sorted_iso)}")
+    #print(f"lenght iso: {len(sorted_iso)}")
     
     # restart the counter and initialize the two flags
     i = 0
@@ -219,19 +220,18 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
         # (isolines already sorted by maximum latitude)
         # 1) closed contours
         # 2) detected eddy center inside the polygon
-        if ((len(xdata) < 3) | (len(ydata) < 3)):
-            #print('xx Contour is not closed.')
+        if ((len(xdata) < 3) or (len(ydata) < 3)):
             i += 1
             continue
         try:
             inpo = inpolygon(ec_lon, ec_lat, xdata, ydata)
         except Exception as e:
-            print(f"ec_lon={ec_lon}, ec_lat={ec_lat}")
-            print('Error in inpolygon')
-            print(f'Error: {e}')
+            #print(f"ec_lon={ec_lon}, ec_lat={ec_lat}")
+            #print('Error in inpolygon')
+            #print(f'Error: {e}')
             inpo = False
         if (((xdata[0] == xdata[-1]) & (ydata[0] == ydata[-1])) & inpo):
-            print('Contour is closed.')
+            #print('Contour is closed.')
             # find the contour extremes
             Nj = np.max(ydata)
             Ni = np.max(xdata[int(np.where(ydata==Nj)[0][0])])
@@ -283,13 +283,10 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
     # in case velocity doesn't increase across the closed contour, eddy shape
     # is defined simply as the largest closed contour
     if ((eddy_lim==[]) & (largest_curve!=[])):
-        print('Largest closed contour selected')
         eddy_lim = largest_curve
     if eddy_lim==[]:
-        print('None')
         return None, None, None
     else:
-        print('Found eddy limits')
         mask = inpolygon2D(lon.flatten(), lat.flatten(), eddy_lim[0], eddy_lim[1])
         eddy_mask = mask.reshape(np.shape(lon))
         eddy_j = np.where(eddy_mask)[0]
@@ -299,7 +296,6 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
 
 def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
                    regrid_avoided=False):
-    print('detect_UV_core')
     if regrid_avoided == True:
         raise ValueError("regrid_avoided cannot be used (yet).")
     u = U.isel(time=t).values
@@ -446,11 +442,7 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
                         # - no consecutive vectors more than one quadrant away
                         # - no backward rotation
                         if ((np.where(np.diff(quadrants) > 1)[0].size == 0)
-                            & (np.where(np.diff(quadrants) < 0)[0].size == 0)):
-
-                            print(f'The rotation is pretty uniform, no weird thing happening there. Looking for eddy boundaries...')
-                            print(f'Local minima found in indices ({i1},{i2}). time={t}')
-                            
+                            & (np.where(np.diff(quadrants) < 0)[0].size == 0)):                            
                             u_large = u[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
                                         int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
                             v_large = v[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
@@ -470,7 +462,6 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
                                                                          slon[X, Y][0], slat[X, Y][0], psi, speed_large)
 
                             if ((np.shape(eddy_i)!=()) & (np.shape(eddy_j)!=()) & (np.shape(eddy_mask)!=())):
-                                print(f'This never happens.')
                                 eddi[e] = {}
                                 eddi[e]["lon"] = slon[X, Y]
                                 eddi[e]["lat"] = slat[X, Y]
@@ -497,9 +488,7 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
     return eddi
 
 
-def detect_UV(data, det_param, u_var, v_var, speed_var,
-              use_bags=False, use_mp=False, mp_cpu=2,
-              regrid_avoided=False):
+def check_input_validity(use_bags, use_mp, det_param, data):
     # make sure arguments are compatible
     if use_bags and use_mp:
         raise ValueError('Cannot use dask_bags and multiprocessing at the'
@@ -514,6 +503,8 @@ def detect_UV(data, det_param, u_var, v_var, speed_var,
         or det_param['lat2'] > np.around(data['lat'].max())):
         raise ValueError('`det_param`: min. and/or max. of latitude range'
                          + ' are outside the region contained in the dataset')
+
+def define_start_and_end_dates(det_param, data):
     if det_param['calendar'] == 'standard':
         start_time = np.datetime64(det_param['start_time'])
         end_time = np.datetime64(det_param['end_time'])
@@ -529,29 +520,23 @@ def detect_UV(data, det_param, u_var, v_var, speed_var,
         raise ValueError('`det_param`: there is no overlap of the original time'
                          + ' axis and the desired time range for the'
                          + ' detection')
-    #
-    print('preparing data for eddy detection'
-          + ' (masking and region extracting etc.)')
-    # Make sure longitude vector is monotonically increasing if we have a
-    # latlon grid
-    U = data[u_var]
-    V = data[v_var]
-    SPEED = data[speed_var]
-    # Define the names of the grid cell sizes depending on the model
-    if det_param['model'] == 'MITgcm':
-        e1f_name = 'dxC'
-        e2f_name = 'dyC'
-    if det_param['model'] == 'ORCA':
-        e1f_name = 'e1f'
-        e2f_name = 'e2f'
-    e1f = data[e1f_name]
-    e2f = data[e2f_name]
+
+    return (start_time, end_time)
+
+
+def detect_UV(data, det_param, u_var, v_var, speed_var, use_bags=False, use_mp=False, 
+              mp_cpu=2, regrid_avoided=False):
+    # Checking that inputs make sense
+    check_input_validity(use_bags, use_mp, det_param, data)
+    # Defining useful variables
+    start_time, end_time = define_start_and_end_dates(det_param, data)
+    U = data[u_var].compute()
+    V = data[v_var].compute()
+    SPEED = data[speed_var].compute()
+    e1f = data['dxC'].values
+    e2f = data['dyC'].values
+    
     if use_mp:
-        U = U.compute()
-        V = V.compute()
-        SPEED = SPEED.compute()
-        e1f = e1f.values
-        e2f = e2f.values
         ## set range of parallel executions
         pexps = range(0, len(U['time']))
         ## prepare arguments
@@ -573,11 +558,6 @@ def detect_UV(data, det_param, u_var, v_var, speed_var,
         p.close()
         p.join()
     elif use_bags:
-        U = U.compute()
-        V = V.compute()
-        SPEED = SPEED.compute()
-        e1f = e1f.values
-        e2f = e2f.values
         ## set range of parallel executions
         pexps = range(0, len(U['time']))
         ## generate dask bag instance
@@ -590,11 +570,6 @@ def detect_UV(data, det_param, u_var, v_var, speed_var,
         eddies = detection.compute()
     else:
         eddies = {}
-        U = U.compute()
-        V = V.compute()
-        SPEED = SPEED.compute()
-        e1f = e1f.values
-        e2f = e2f.values
         for tt in np.arange(0, len(U['time'])):
             steps = np.around(np.linspace(0, len(U['time']), 10))
             if tt in steps:

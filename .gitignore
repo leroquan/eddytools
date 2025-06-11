@@ -6,5 +6,8 @@ missfont.log
 run_test.sh
 *.nc
 *.pickle
+*.png
+*.png
 */dask-worker-space
-*/.ipynb_checkpoints
+.ipynb_checkpoints/
+workspace/OW/.ipynb_checkpoints/

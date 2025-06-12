@@ -11,6 +11,7 @@ from work by Chirstopher Bull.
 from . import okuboweiss
 from . import interp
 from . import detection
+from . import detection_ow
 from . import detection_nencioli
 from . import tracking
 from . import sample

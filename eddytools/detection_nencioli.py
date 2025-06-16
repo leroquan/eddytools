@@ -117,7 +117,9 @@ def compute_psi(u_psi, v_psi, dx, dy):
     # PSI from integrating u first and then v
     psi_yx = (-np.nancumsum(v_psi, axis=1) * dx + cy[:, None])
     # final PSI as average between the two
-    return (psi_xy + psi_yx) / 2
+    psi = (psi_xy + psi_yx) / 2
+
+    return np.where(np.isnan(u_psi), np.nan, psi)
 
 
 def inpolygon(point_i, point_j, x, y):
@@ -294,6 +296,13 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
         return eddy_i, eddy_j, eddy_mask
 
 
+def eddi_exists(eddi, lon_eddie, lat_eddie):
+    for e in eddi:
+        if eddi[e]["lon"] == lon_eddie and eddi[e]["lat"] == lat_eddie:
+            return True
+    return False
+
+
 def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
                    regrid_avoided=False):
     if regrid_avoided == True:
@@ -372,9 +381,9 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
                 slat = lat[i-b:i+b, indx[ii]-b:indx[ii]+1+b]
                 slon = lon[i-b:i+b, indx[ii]-b:indx[ii]+1+b]
                 # position of the velocity minimum within the searching area
-                X, Y = np.where(srch == np.nanmin(srch))               
+                X, Y = np.where(srch == np.nanmin(srch))                
                 
-                if len(X) == 1:
+                if len(X) == 1 and not eddi_exists(eddi, slon[X, Y], slat[X, Y]):
                     # second searching area centered around the velocity minimum
                     # (bound prevents this area from extending outside the domain)
                     srch2 = speed[int(max((i-b)+(X-1)-b, 1)):int(min((i-b)+(X-1)+b, bounds[0])),
@@ -386,8 +395,7 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
                     #    eddy_c.append([(slat[X, Y][0], slon[X, Y][0])])
                 else:
                     var = 0
-    
-            
+                
             # check the rotation of the vectors along the boundary of the area
             # "a-1" around the points which satisfy the first three constraints
             d = a - 1

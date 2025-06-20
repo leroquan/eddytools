@@ -167,6 +167,82 @@ def interpolate_limits(pt_i, pt_j, lon, lat, dkm, vel, direct):
     return in_out_vel
 
 
+def check_winding_angle(stline_x, stline_y, winding_thres=360, baddir_thres=90, d_thres=5):
+    """
+    Compute winding angle and eddy detection based on streamline path.
+
+    Parameters:
+    ----------
+    stline_x : array-like
+        X coordinates of the streamline.
+    stline_y : array-like
+        Y coordinates of the streamline.
+    winding_thres : float, optional
+        Threshold for winding angle to detect an eddy (degrees).
+    baddir_thres : float, optional
+        Maximum angle deviation allowed in wrong direction (degrees).
+    d_thres : float, optional
+        Distance threshold to consider path closed (same units as stline_x/y).
+
+    Returns:
+    -------
+    eddy : bool
+        True if an eddy is detected.
+    winding : float
+        Total winding angle in degrees.
+    """
+
+    eddy = False
+    winding = 0.0
+    dir = 0
+    baddir = 0.0
+
+    dx = stline_x[1] - stline_x[0]
+    dy = stline_y[1] - stline_y[0]
+    ang0 = np.degrees(np.arctan2(dy, dx))
+
+    for ii in range(1, len(stline_x) - 1):
+        dx = stline_x[ii+1] - stline_x[ii]
+        dy = stline_y[ii+1] - stline_y[ii]
+        ang1 = np.degrees(np.arctan2(dy, dx))
+        ang_diff = ang1 - ang0
+
+        # Normalize angle difference to [-180, 180]
+        if ang_diff > 180:
+            ang_diff -= 360
+        if ang_diff < -180:
+            ang_diff += 360
+
+        if dir == 0:
+            dir = np.sign(ang_diff)
+
+        if ii > 1:
+            newdir = np.sign(ang_diff)
+            if newdir != dir and newdir != 0:
+                baddir += ang_diff
+                if abs(baddir) > baddir_thres:
+                    break
+            elif newdir == dir:
+                baddir = 0
+
+        ang0 = ang1
+        winding += ang_diff
+
+        if abs(winding) > winding_thres:
+            dx = stline_x[ii] - stline_x[0]
+            dy = stline_y[ii] - stline_y[0]
+            d = np.sqrt(dx**2 + dy**2)
+
+            if eddy:
+                if d > d1:
+                    break
+            if d < d_thres:
+                eddy = True
+                d1 = d
+
+    return eddy, winding
+
+
 def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
     # define the distance from the contour extremes at which velocity magnitude
     # is interpolated
@@ -234,66 +310,73 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
             inpo = False
         if (((xdata[0] == xdata[-1]) & (ydata[0] == ydata[-1])) & inpo):
             #print('Contour is closed.')
-            # find the contour extremes
-            Nj = np.max(ydata)
-            Ni = np.max(xdata[int(np.where(ydata==Nj)[0][0])])
-            Sj = np.min(ydata)
-            Si = np.min(xdata[int(np.where(ydata==Sj)[0][0])])
-            Ei = np.max(xdata)
-            Ej = np.min(ydata[int(np.where(xdata==Ei)[0][0])])
-            Wi = np.min(xdata)
-            Wj = np.max(ydata[int(np.where(xdata==Wi)[0][0])])
-            # check if velocity across the contour increases
-            direct = ['N', 'S', 'E', 'W']
-            pts_I = [Ni, Si, Ei, Wi]
-            pts_J = [Nj, Sj, Ej, Wj]
-            # inspect one extreme at the time (faster)
-            iii = 0 # counter
-            smaller_vel = 0  # flag to stop the loop (1 if velocity decreases
-                             # across the fourth extremes)
-            smaller_vel1 = 0 # flag to stop the loop (1 if velocity decreases
-                             # across the third extremes)
-            smaller_vel2 = 0 # flag to stop the loop (1 if velocity decreases
-                             # across the second extremes)
-            smaller_vel3 = 0 # flag to stop the loop (1 if velocity decreases
-                             # across the first extremes)
-            while ((iii < len(direct)) & (smaller_vel == 0)):
-                # interpolate velocity across the extreme
-                in_out_vel = interpolate_limits(pts_I[iii], pts_J[iii],
-                                                lon, lat, dkm, vel, direct[iii])
-                # change the flag value if velocity decreases
-                if (in_out_vel[0] > in_out_vel[1]):
-                    if (smaller_vel3 == 0):
-                        smaller_vel3 = 1
-                    elif (smaller_vel2 == 0):
-                        smaller_vel2 = 1
-                    elif (smaller_vel1 == 0):
-                        smaller_vel1 = 1
-                    elif (smaller_vel == 0):
-                        smaller_vel = 1
-                iii += 1 # increase the counter
-            # only if velocity increases across all four extremes the closed
-            # contour is saved as eddy shape
-            if (smaller_vel == 0):
-                eddy_lim = [xdata, ydata]
-                closed_indx = 1
-            # largest closed conotur is saved as well
-            if (largest_indx == 0):
-                largest_curve = [xdata, ydata]
-                largest_indx = 1
+
+            valid_winding, winding = check_winding_angle(xdata, ydata, winding_thres=340, baddir_thres=90, d_thres=5)
+
+            valid_winding=True
+            if valid_winding:            
+                # find the contour extremes
+                Nj = np.max(ydata)
+                Ni = np.max(xdata[int(np.where(ydata==Nj)[0][0])])
+                Sj = np.min(ydata)
+                Si = np.min(xdata[int(np.where(ydata==Sj)[0][0])])
+                Ei = np.max(xdata)
+                Ej = np.min(ydata[int(np.where(xdata==Ei)[0][0])])
+                Wi = np.min(xdata)
+                Wj = np.max(ydata[int(np.where(xdata==Wi)[0][0])])
+                # check if velocity across the contour increases
+                direct = ['N', 'S', 'E', 'W']
+                pts_I = [Ni, Si, Ei, Wi]
+                pts_J = [Nj, Sj, Ej, Wj]
+                # inspect one extreme at the time (faster)
+                iii = 0 # counter
+                smaller_vel = 0  # flag to stop the loop (1 if velocity decreases
+                                 # across the fourth extremes)
+                smaller_vel1 = 0 # flag to stop the loop (1 if velocity decreases
+                                 # across the third extremes)
+                smaller_vel2 = 0 # flag to stop the loop (1 if velocity decreases
+                                 # across the second extremes)
+                smaller_vel3 = 0 # flag to stop the loop (1 if velocity decreases
+                                 # across the first extremes)
+                while ((iii < len(direct)) & (smaller_vel == 0)):
+                    # interpolate velocity across the extreme
+                    in_out_vel = interpolate_limits(pts_I[iii], pts_J[iii],
+                                                    lon, lat, dkm, vel, direct[iii])
+                    # change the flag value if velocity decreases
+                    if (in_out_vel[0] > in_out_vel[1]):
+                        if (smaller_vel3 == 0):
+                            smaller_vel3 = 1
+                        elif (smaller_vel2 == 0):
+                            smaller_vel2 = 1
+                        elif (smaller_vel1 == 0):
+                            smaller_vel1 = 1
+                        elif (smaller_vel == 0):
+                            smaller_vel = 1
+                    iii += 1 # increase the counter
+                # only if velocity increases across all four extremes the closed
+                # contour is saved as eddy shape
+                if (smaller_vel == 0):
+                    eddy_lim = [xdata, ydata]
+                    closed_indx = 1
+                # largest closed conotur is saved as well
+                if (largest_indx == 0):
+                    largest_curve = [xdata, ydata]
+                    largest_indx = 1                
+                    # in case velocity doesn't increase across the closed contour, eddy shape
+                    # is defined simply as the largest closed contour
+                    if eddy_lim==[]:
+                        eddy_lim = largest_curve
+
         i += 1 # increase the counter
-    # in case velocity doesn't increase across the closed contour, eddy shape
-    # is defined simply as the largest closed contour
-    if ((eddy_lim==[]) & (largest_curve!=[])):
-        eddy_lim = largest_curve
+
     if eddy_lim==[]:
-        return None, None, None
+        return None, None, None, None
     else:
         mask = inpolygon2D(lon.flatten(), lat.flatten(), eddy_lim[0], eddy_lim[1])
         eddy_mask = mask.reshape(np.shape(lon))
         eddy_j = np.where(eddy_mask)[0]
         eddy_i = np.where(eddy_mask)[1]
-        return eddy_i, eddy_j, eddy_mask
+        return eddy_i, eddy_j, eddy_mask, winding
 
 
 def eddi_exists(eddi, lon_eddie, lat_eddie):
@@ -402,97 +485,50 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f,
             if var != 0:
                 # indices of the estimated center in the large domain
                 i1, i2 = np.where((lat == slat[X, Y]) & (lon == slon[X, Y]))
-                
-                #print(f'Local minima found in indices ({i1},{i2}). Looking for rotation...')
-                
-                # velocities within "a-1" points from the estimated center
-                u_small = u[int(max(i1-d, 1)):int(min(i1+d+1, bounds[0])),
-                            int(max(i2-d, 1)):int(min(i2+d+1, bounds[1]))]
-                v_small = v[int(max(i1-d, 1)):int(min(i1+d+1, bounds[0])),
-                            int(max(i2-d, 1)):int(min(i2+d+1, bounds[1]))]
-                lon_small = lon[int(max(i1-d, 1)):int(min(i1+d+1, bounds[0])),
-                            int(max(i2-d, 1)):int(min(i2+d+1, bounds[1]))]
-                lat_small = lat[int(max(i1-d, 1)):int(min(i1+d+1, bounds[0])),
-                            int(max(i2-d, 1)):int(min(i2+d+1, bounds[1]))]
-                # constraint is applied only if sea-points are within the area
-                if ~np.isnan(u_small).all():
-                    # boundary velocities
-                    u_bound = [u_small[0, :], u_small[1::, -1],
-                               u_small[-1, -2:0:-1], u_small[-1:0:-1, 0]]
-                    u_bound = np.array([item for sublist in u_bound for item in sublist])
-                    v_bound = [v_small[0, :], v_small[1::, -1],
-                               v_small[-1, -2:0:-1], v_small[-1:0:-1, 0]]
-                    v_bound = np.array([item for sublist in v_bound for item in sublist])
-                    # vector defining which quadrant each boundary vector
-                    # belongs to
-                    quadrants = np.zeros_like(u_bound)
-                    quadrants[((u_bound >= 0) & (v_bound >= 0))] = 1
-                    quadrants[((u_bound < 0) & (v_bound >= 0))] = 2
-                    quadrants[((u_bound < 0) & (v_bound < 0))] = 3
-                    quadrants[((u_bound >= 0) & (v_bound < 0))] = 4
-                    # used identify which is the firts fourth quadrant vector
-                    spin = np.where(quadrants==4)[0]
-                    # apply the constraint only if complete rotation and not
-                    # all vectors in the fourth quadrant
-                    if ((spin.size != 0) & (spin.size != quadrants.size)):
-                        
-                        #print(f"There is complete rotation !! Checking if it's uniform...")
-                        
-                        # if vectors start in 4 quadrant, then I add 4 to all
-                        # quandrant positions from the first 1 occurrence
-                        if spin[0] == 0:
-                            spin = np.where(quadrants!=4)[0]
-                            spin = spin[0] - 1
-                        else:
-                            spin = spin[-1]
-                        quadrants[spin+1::] = quadrants[spin+1::] + 4
-                        # inspect vector rotation:
-                        # - no consecutive vectors more than one quadrant away
-                        # - no backward rotation
-                        if ((np.where(np.diff(quadrants) > 1)[0].size == 0)
-                            & (np.where(np.diff(quadrants) < 0)[0].size == 0)):                            
-                            u_large = u[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
-                                        int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                            v_large = v[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
-                                        int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                            speed_large = speed[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
-                                                int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                            lon_large = lon[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
-                                            int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                            lat_large = lat[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
-                                            int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                            e1f_large = e1f[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
-                                            int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                            e2f_large = e2f[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
-                                            int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                            psi = compute_psi(u_large, v_large, e1f_large, e2f_large)
-                            eddy_i, eddy_j, eddy_mask = get_eddy_indeces(lon_large, lat_large,
-                                                                         slon[X, Y][0], slat[X, Y][0], psi, speed_large)
+                              
+                u_large = u[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
+                            int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
+                v_large = v[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
+                            int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
+                speed_large = speed[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
+                                    int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
+                lon_large = lon[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
+                                int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
+                lat_large = lat[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
+                                int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
+                e1f_large = e1f[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
+                                int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
+                e2f_large = e2f[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
+                                int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
+                psi = compute_psi(u_large, v_large, e1f_large, e2f_large)
+                eddy_i, eddy_j, eddy_mask, winding = get_eddy_indeces(lon_large, lat_large,
+                                                             slon[X, Y][0], slat[X, Y][0], psi, speed_large)
 
-                            if ((np.shape(eddy_i)!=()) & (np.shape(eddy_j)!=()) & (np.shape(eddy_mask)!=())):
-                                eddi[e] = {}
-                                eddi[e]["lon"] = slon[X, Y]
-                                eddi[e]["lat"] = slat[X, Y]
-                                j_min = (data.lat.where(data.lat == np.nanmin(lat_large), other=0) ** 2).argmax().values
-                                i_min = (data.lon.where(data.lon == np.nanmin(lon_large), other=0) ** 2).argmax().values
-                                eddi[e]['eddy_j'] = eddy_j + j_min
-                                eddi[e]['eddy_i'] = eddy_i + i_min
-                                eddi[e]['time'] = U.isel(time=t).time.values
-                                eddi[e]['amp'] = np.array([np.nanmax(psi * eddy_mask) - np.nanmin(psi * eddy_mask)])
-                                area = (e1f_large / 1000.) * (e2f_large / 1000.) * eddy_mask
-                                eddi[e]['area'] = np.array([np.nansum(area)])
-                                eddi[e]['scale'] = np.array([np.sqrt(eddi[e]['area'] / np.pi)])
-                                if det_param["hemi"] == "north":
-                                    if var == -1:
-                                        eddi[e]['type'] = "anticyclonic"
-                                    elif var ==1:
-                                        eddi[e]['type'] = "cyclonic"
-                                elif det_param["hemi"] == "south":
-                                    if var == -1:
-                                        eddi[e]['type'] = "cyclonic"
-                                    elif var ==1:
-                                        eddi[e]['type'] = "anticyclonic"
-                                e += 1
+                if ((np.shape(eddy_i)!=()) & (np.shape(eddy_j)!=()) & (np.shape(eddy_mask)!=())):
+                    eddi[e] = {}
+                    eddi[e]["lon"] = slon[X, Y]
+                    eddi[e]["lat"] = slat[X, Y]
+                    j_min = (data.lat.where(data.lat == np.nanmin(lat_large), other=0) ** 2).argmax().values
+                    i_min = (data.lon.where(data.lon == np.nanmin(lon_large), other=0) ** 2).argmax().values
+                    eddi[e]['eddy_j'] = eddy_j + j_min
+                    eddi[e]['eddy_i'] = eddy_i + i_min
+                    eddi[e]['time'] = U.isel(time=t).time.values
+                    eddi[e]['amp'] = np.array([np.nanmax(psi * eddy_mask) - np.nanmin(psi * eddy_mask)])
+                    area = (e1f_large / 1000.) * (e2f_large / 1000.) * eddy_mask
+                    eddi[e]['area'] = np.array([np.nansum(area)])
+                    eddi[e]['scale'] = np.array([np.sqrt(eddi[e]['area'] / np.pi)])
+                    eddi[e]['winding'] = winding
+                    if det_param["hemi"] == "north":
+                        if var == -1:
+                            eddi[e]['type'] = "anticyclonic"
+                        elif var ==1:
+                            eddi[e]['type'] = "cyclonic"
+                    elif det_param["hemi"] == "south":
+                        if var == -1:
+                            eddi[e]['type'] = "cyclonic"
+                        elif var ==1:
+                            eddi[e]['type'] = "anticyclonic"
+                    e += 1
     return eddi
 
 

@@ -13,6 +13,7 @@ from . import interp
 from . import detection
 from . import detection_ow
 from . import detection_nencioli
+from . import detection_nencioli_winding
 from . import tracking
 from . import sample
 from . import average

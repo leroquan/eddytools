@@ -7,11 +7,12 @@ needs to have the same structure.
 
 import numpy as np
 from matplotlib.path import Path
+import matplotlib.pyplot as plt
 import xarray as xr
 import cftime as cft
 import itertools
-from contourpy import contour_generator
 from scipy.spatial import ConvexHull
+from scipy.spatial import cKDTree
 try:
     import multiprocessing as mp
 except:
@@ -97,26 +98,6 @@ def preprocess_inputs(str_start_time, str_end_time, data, depth_index):
     return format_data(data_cropped)
 
 
-def compute_psi(u_psi, v_psi, dx, dy):
-    # compute PSI to get eddy area
-    # Indices for domain size
-    lx = np.shape(u_psi)[0]
-    ly = np.shape(u_psi)[1]
-    # itegrate first row of v along longitude (first term of eq.A2)
-    cx = np.nancumsum(v_psi[0, :]) * dx[0, :]
-    # integrate first column of u along latitude (second term of eq.A3)
-    cy = np.nancumsum(u_psi[:, 0]) * dy[:, 0]
-    # compute streamfunction
-    # PSI from integrating v firts and then u
-    psi_xy = (-cx[None, :] + np.nancumsum(u_psi, axis=0) * dy)
-    # PSI from integrating u first and then v
-    psi_yx = (-np.nancumsum(v_psi, axis=1) * dx + cy[:, None])
-    # final PSI as average between the two
-    psi = (psi_xy + psi_yx) / 2
-
-    return np.where(np.isnan(u_psi), np.nan, psi)
-
-
 def check_if_in_polygon(x_center: float, y_center: float, x_isoline, y_isoline):
     p = np.array([x_isoline, y_isoline]).T
     hullp = ConvexHull(p)
@@ -138,47 +119,53 @@ def normalize_angle(angle):
     return angle
 
 
-def check_winding_angle(stline_x, stline_y, winding_thres=360, baddir_thres=90, d_thres=5):
+def check_winding_angle(isoline_x, isoline_y, winding_thres=360, baddir_thres=90, d_thres=500):
     """
     Detects eddies in a streamline by analyzing its winding angle.
 
     Parameters:
-        stline_x (array-like): X coordinates of the streamline.
-        stline_y (array-like): Y coordinates of the streamline.
+        isoline_x (array-like): X coordinates of the isoline.
+        isoline_y (array-like): Y coordinates of the isoline.
         winding_thres (float): Threshold winding angle to declare an eddy (degrees).
         baddir_thres (float): Threshold for angle deviation in wrong direction (degrees).
         d_thres (float): Distance threshold for closed loop detection.
 
     Returns:
-        (bool, float): (eddy_detected, total_winding_angle)
+        (bool, float, [], []): (eddy, winding, contour_x, contour_y)
     """
     winding = 0.0
     baddir = 0.0
     dir_sign = 0
     eddy = False
+    contour_x = []
+    contour_y = []
     min_dist = float('inf')
 
     # Initial direction
-    dx0 = stline_x[1] - stline_x[0]
-    dy0 = stline_y[1] - stline_y[0]
+    dx0 = isoline_x[1] - isoline_x[0]
+    dy0 = isoline_y[1] - isoline_y[0]
     prev_angle = np.degrees(np.arctan2(dy0, dx0))
 
-    for i in range(1, len(stline_x) - 1):
-        angle_diff, winding = increment_winding_angle(i, prev_angle, stline_x, stline_y, winding)
+    for i in range(len(isoline_x) - 1, 1, -1):
+        angle_diff, prev_angle, winding  = increment_winding_angle(i, prev_angle, isoline_x, isoline_y, winding)
 
         if not check_direction_consistency(angle_diff, baddir, baddir_thres, dir_sign):
             break
 
         # Eddy detection logic
         if abs(winding) > winding_thres:
-            dist_to_start = np.hypot(stline_x[i] - stline_x[0], stline_y[i] - stline_y[0])
+            dist_to_start = np.hypot(isoline_x[i] - isoline_x[-1], isoline_y[i] - isoline_y[-1])
             if eddy and dist_to_start > min_dist:
+                contour_x = isoline_x[i+1:]
+                contour_y = isoline_y[i+1:]
                 break
             if dist_to_start < d_thres:
                 eddy = True
+                contour_x = isoline_x[i:]
+                contour_y = isoline_y[i:]
                 min_dist = dist_to_start
 
-    return eddy, winding
+    return eddy, winding, contour_x, contour_y
 
 
 def check_direction_consistency(angle_diff, baddir, baddir_thres, dir_sign):
@@ -200,17 +187,17 @@ def check_direction_consistency(angle_diff, baddir, baddir_thres, dir_sign):
 
 
 def increment_winding_angle(i, prev_angle, stline_x, stline_y, winding):
-    dx = stline_x[i + 1] - stline_x[i]
-    dy = stline_y[i + 1] - stline_y[i]
+    dx = stline_x[i - 1] - stline_x[i]
+    dy = stline_y[i - 1] - stline_y[i]
     curr_angle = np.degrees(np.arctan2(dy, dx))
     angle_diff = normalize_angle(curr_angle - prev_angle)
     prev_angle = curr_angle
     winding += angle_diff
 
-    return angle_diff, winding
+    return angle_diff, prev_angle, winding
 
 
-def get_eddy_contour(lon, lat, ec_lon, ec_lat, psi):
+def get_eddy_contour(u, v, lon, lat, ec_lon, ec_lat, d_thres):
     """
     Get the largest contour around eddy center fitting these criterions:
     1) detected eddy center inside the polygon
@@ -221,7 +208,8 @@ def get_eddy_contour(lon, lat, ec_lon, ec_lat, psi):
     -------
     eddy_i, eddy_j, eddy_mask, winding, isolines
     """
-    isolines, isolines_max = generate_contours(lat, lon, psi)
+    isolines, isolines_max = generate_streamlines(u, v, lat, lon, level_density=6)
+
 
     # sort the contours accroding to their maximum latitude; this way the first
     # closed contour across which velocity increases will also be the largest
@@ -234,30 +222,32 @@ def get_eddy_contour(lon, lat, ec_lon, ec_lat, psi):
     # 2) closed contour
     # 3) valid winding angle (Chaigneau 2008)
     eddy_lim = []
-    winding=0
-    for i in range(len(isolines)):
+    for i in range(len(isolines)-1 ):
         ii = sorted_iso[i]
-        xdata = isolines[ii]["x"] # vertex lon's
-        ydata = isolines[ii]["y"] # vertex lat's
-        winding=0
+        xdata = isolines[ii][:,0] # vertex lon's ,
+        ydata = isolines[ii][:,1] # vertex lat's
+        winding=-1
 
         # 1) detected eddy center inside the polygon
         try:
             is_in_polygon = check_if_in_polygon(ec_lon, ec_lat, xdata, ydata)
         except Exception as e:
             is_in_polygon = False
+
         if not is_in_polygon:
             continue
 
         # 2) closed contour
-        if not ((xdata[0] == xdata[-1]) & (ydata[0] == ydata[-1])):
-            continue
+        #if not ((xdata[0] == xdata[-1]) & (ydata[0] == ydata[-1])):
+        #    continue
 
         # 3) valid winding angle
-        valid_winding, winding = check_winding_angle(xdata, ydata, winding_thres=340, baddir_thres=90, d_thres=5)
+        winding = 0
+        valid_winding, winding, contour_x, contour_y = check_winding_angle(xdata, ydata, winding_thres=360,
+                                                                           baddir_thres=90, d_thres=d_thres)
         if valid_winding:
             # Found the eddy contour
-            eddy_lim = [xdata, ydata]
+            eddy_lim = [contour_x, contour_y]
             break
 
     eddy_i, eddy_j, eddy_mask =  None, None, None
@@ -270,37 +260,72 @@ def get_eddy_contour(lon, lat, ec_lon, ec_lat, psi):
     return eddy_i, eddy_j, eddy_mask, winding, isolines
 
 
-def generate_contours(lat, lon, psi):
-    # Generate contour levels
-    levels = np.linspace(np.nanmin(psi), np.nanmax(psi), 200)
-    # Generate contours
-    cg = contour_generator(lon, lat, psi)
-    contours = [cg.lines(level) for level in levels]
-    # Initialize structures
-    isolines = {}
-    isolines_max = []
-    # Flatten and store contour line vertices
-    idx = 0
-    for contour_level in contours:
-        for segment in contour_level:
-            if len(segment[:, 0]) > 3:
-                isolines[idx] = {
-                    "x": segment[:, 0].tolist(),
-                    "y": segment[:, 1].tolist()
-                }
-            isolines_max.append(np.nanmax(segment[:, 1]))
-            idx += 1
-    return isolines, isolines_max
+def build_streamlines(segments, tol=1e0):
+    # Each segment is a (2, 2) array: [[x1, y1], [x2, y2]]
+    start_points = np.array([seg[0] for seg in segments])
+    used = np.zeros(len(segments), dtype=bool)
+
+    # Build KDTree for fast spatial search
+    start_points_tree = cKDTree(start_points)
+
+    streamlines = []
+
+    for i in range(len(segments)):
+        if used[i]:
+            continue
+        streamline = [segments[i][0], segments[i][1]]
+        used[i] = True
+        end = segments[i][1]
+
+        # Follow the chain forward
+        while True:
+            dists, idxs = start_points_tree.query(end, k=5, distance_upper_bound=tol)
+            found = False
+            for dist, idx in zip(dists, idxs):
+                if idx == len(start_points) or used[idx]:
+                    continue
+                if np.linalg.norm(start_points[idx] - end) < tol:
+                    streamline.append(segments[idx][1])
+                    used[idx] = True
+                    found = True
+                    end = segments[idx][1]
+                    break
+            if not found:
+                break
+
+        streamlines.append(np.array(streamline))
+
+    return streamlines
 
 
-def eddy_already_detected(eddi, lon_eddie, lat_eddie):
+def generate_streamlines( u, v, lat, lon, level_density = 6):
+    stream_plot = plt.streamplot(lon, lat, u, v,
+                                 density=level_density)
+    plt.close()
+    seen = set()
+    unique_segments = []
+
+    for segment in stream_plot.lines.get_segments():
+        rounded = np.round(segment, decimals=0)
+        key = rounded.tobytes()  # Fast hashable representation
+        if key not in seen:
+            seen.add(key)
+            unique_segments.append(rounded)
+
+    streamlines = build_streamlines(unique_segments)
+    isolines_max = [line[:, 1].max() for line in streamlines]
+
+    return streamlines, isolines_max
+
+
+def eddy_already_detected(eddi: dict, lon_eddie: float, lat_eddie: float):
     for e in eddi:
         if eddi[e]["lon"] == lon_eddie and eddi[e]["lat"] == lat_eddie:
             return True
     return False
 
 
-def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f):
+def detect_UV_core(data, det_param, U, V, SPEED, t, dxC, dyC):
     """
     Detect eddy cores according to criterions:
     1.a) reversal of direction in v and b) v increase "a" points away from reversal
@@ -316,8 +341,8 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f):
     U = xarray Dataset of velocity U with coordinate time (data_aligned["UVEL"])
     V, SPEED,
     t=time index to select u = U.isel(time=t).values,
-    e1f = data_aligned['dxC'].values,
-    e2f = data_aligned['dyC'].values
+    dxC = data_aligned['dxC'].values,
+    dyC = data_aligned['dyC'].values
 
     Returns
     -------
@@ -334,18 +359,19 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f):
     b = det_param["b"]
     rad = det_param["rad"]
     bounds = np.shape(speed)
+    d_thres = 1000
     # initialise eddy counter & output dict
     e = 0
     eddi = {}
     
-    for i in range(len(v[:, 0])):
+    for i in range(len(v[:, 0])-1):
         v_slice = v[i, :]
 
         # ------------
         # 1.a) reversal of direction in v
         s = np.sign(v_slice)
         index_v_reversal = np.where((np.diff(s) != 0) & (~np.isnan(np.diff(s))))[0]
-        for ii in range(len(index_v_reversal)):
+        for ii in range(len(index_v_reversal)-1):
             idx_v = index_v_reversal[ii]
 
             # 1.b) v increase "a" points away from reversal
@@ -402,9 +428,11 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f):
             # position of the velocity minimum within the searching area
             idx_x_eddy, idx_y_eddy = np.where(srch == np.nanmin(srch))
 
-            if eddy_already_detected(eddi, slon[idx_x_eddy, idx_y_eddy], slat[idx_x_eddy, idx_y_eddy]):
-                continue
             if len(idx_x_eddy) != 1:
+                idx_x_eddy=idx_x_eddy[0]
+                idx_y_eddy=idx_y_eddy[0]
+
+            if eddy_already_detected(eddi, slon[idx_x_eddy, idx_y_eddy], slat[idx_x_eddy, idx_y_eddy]):
                 continue
 
             # second searching area centered around the velocity minimum
@@ -431,25 +459,36 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f):
                             int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
             lat_large = lat[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
                             int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-            e1f_large = e1f[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
+            dxC_large = dxC[int(max(i1 - (rad * a), 1)):int(min(i1 + (rad * a), bounds[0])),
                             int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-            e2f_large = e2f[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
+            dyC_large = dyC[int(max(i1 - (rad * a), 1)):int(min(i1 + (rad * a), bounds[0])),
                             int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
 
-            psi = compute_psi(u_large, v_large, e1f_large, e2f_large)
-            eddy_i, eddy_j, eddy_mask, winding = get_eddy_contour(lon_large,
-                                                                  lat_large,
-                                                                  slon[idx_x_eddy, idx_y_eddy][0],
-                                                                  slat[idx_x_eddy, idx_y_eddy][0],
-                                                                  psi)
+            eddy_i, eddy_j, eddy_mask, winding, isolines = get_eddy_contour(u_large,
+                                                                            v_large,
+                                                                            lon_large,
+                                                                            lat_large,
+                                                                            slon[idx_x_eddy, idx_y_eddy],
+                                                                            slat[idx_x_eddy, idx_y_eddy],
+                                                                            d_thres)
 
             if eddy_i is None:
+                #debug
+                eddi[e] = {}
+                eddi[e]['valid_eddy'] = -1
+                eddi[e]['winding'] = winding
+                eddi[e]["lon"] = slon[idx_x_eddy, idx_y_eddy]
+                eddi[e]["lat"] = slat[idx_x_eddy, idx_y_eddy]
+                eddi[e]['time'] = U.isel(time=t).time.values
+                eddi[e]['isolines'] = isolines
+                e += 1
                 continue
 
             # ------------
             # All criterions are satisfied
 
             eddi[e] = {}
+            eddi[e]['valid_eddy'] = 1
             eddi[e]["lon"] = slon[idx_x_eddy, idx_y_eddy]
             eddi[e]["lat"] = slat[idx_x_eddy, idx_y_eddy]
             j_min = (data.lat.where(data.lat == np.nanmin(lat_large), other=0) ** 2).argmax().values
@@ -457,8 +496,7 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, e1f, e2f):
             eddi[e]['eddy_j'] = eddy_j + j_min
             eddi[e]['eddy_i'] = eddy_i + i_min
             eddi[e]['time'] = U.isel(time=t).time.values
-            eddi[e]['amp'] = np.array([np.nanmax(psi * eddy_mask) - np.nanmin(psi * eddy_mask)])
-            area = (e1f_large / 1000.) * (e2f_large / 1000.) * eddy_mask
+            area = (dxC_large / 1000.) * (dyC_large / 1000.) * eddy_mask
             eddi[e]['area'] = np.array([np.nansum(area)])
             eddi[e]['scale'] = np.array([np.sqrt(eddi[e]['area'] / np.pi)])
             eddi[e]['winding'] = winding
@@ -493,6 +531,7 @@ def check_input_validity(use_bags, use_mp, det_param, data):
         raise ValueError('`det_param`: min. and/or max. of latitude range'
                          + ' are outside the region contained in the dataset')
 
+
 def define_start_and_end_dates(det_param, data):
     if det_param['calendar'] == 'standard':
         start_time = np.datetime64(det_param['start_time'])
@@ -524,8 +563,8 @@ def detect_UV(data, det_param, u_var, v_var, speed_var, use_bags=False, use_mp=F
     U = data[u_var].compute()
     V = data[v_var].compute()
     SPEED = data[speed_var].compute()
-    e1f = data['dxC'].values
-    e2f = data['dyC'].values
+    dxC = data['dxC'].values
+    dyC = data['dyC'].values
     
     if use_mp:
         ## set range of parallel executions
@@ -538,8 +577,8 @@ def detect_UV(data, det_param, u_var, v_var, speed_var, use_bags=False, use_mp=F
                         itertools.repeat(V),
                         itertools.repeat(SPEED),
                         pexps,
-                        itertools.repeat(e1f),
-                        itertools.repeat(e2f)
+                        itertools.repeat(dxC),
+                        itertools.repeat(dyC)
                         )
         print("Detecting eddies in velocity fields")
         if mp_cpu > mp.cpu_count():
@@ -556,7 +595,7 @@ def detect_UV(data, det_param, u_var, v_var, speed_var, use_bags=False, use_mp=F
         print("Detecting eddies in velocity fields")
         detection = dask_bag.map(
             lambda tt: detect_UV_core(data, det_param.copy(), U, V, SPEED, tt,
-                                      e1f, e2f)
+                                      dxC, dyC)
                                  ,seeds_bag)
         eddies = detection.compute()
     else:
@@ -567,5 +606,5 @@ def detect_UV(data, det_param, u_var, v_var, speed_var, use_bags=False, use_mp=F
                 print('detection at time step ', str(tt + 1), ' of ',
                       len(U['time']))
             eddies[tt] = detect_UV_core(data, det_param.copy(),
-                                        U, V, SPEED, tt, e1f, e2f)
+                                        U, V, SPEED, tt, dxC, dyC)
     return eddies

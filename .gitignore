@@ -11,3 +11,5 @@ run_test.sh
 */dask-worker-space
 .ipynb_checkpoints/
 workspace/OW/.ipynb_checkpoints/
+eddytools_env/
+eddytools_venv/

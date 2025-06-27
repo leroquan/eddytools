@@ -205,12 +205,12 @@ def increment_winding_angle(i, prev_angle, stline_x, stline_y, winding):
     return angle_diff, prev_angle, winding
 
 
-def get_eddy_contour(u, v, lon, lat, ec_lon, ec_lat, d_thres):
+def get_eddy_contour(u, v, lon, lat, lon_eddy_center, lat_eddy_center, d_thres):
     """
     Get the largest contour around eddy center fitting these criterions:
     1) detected eddy center inside the polygon
-    2) closed contour
-    3) valid winding angle
+    2) valid winding angle
+    3) closed contour (end_point within d_thres distance from start_point)
 
     Returns
     -------
@@ -218,31 +218,16 @@ def get_eddy_contour(u, v, lon, lat, ec_lon, ec_lat, d_thres):
     """
     isolines, isolines_max = generate_streamlines(u, v, lat, lon, level_density=6)
 
-
-    # sort the contours accroding to their maximum latitude; this way the first
-    # closed contour across which velocity increases will also be the largest
-    # one (it's the one which extend further north).
+    # sort the contours accroding to their maximum latitude
     sorted_iso = np.argsort(isolines_max)[::-1]
-
-    # Conditions to have the largest closed contour around the center
-    # (isolines already sorted by maximum latitude)
-    # 1) detected eddy center inside the polygon
-    # 2) closed contour
-    # 3) valid winding angle (Chaigneau 2008)
     eddy_lim = []
     for i in range(len(isolines)-1 ):
         ii = sorted_iso[i]
-        xdata = isolines[ii][:,0] # vertex lon's ,
-        ydata = isolines[ii][:,1] # vertex lat's
-        winding=-1
+        isoline_x = isolines[ii][:,0] # vertex lon's ,
+        isoline_y = isolines[ii][:,1] # vertex lat's
 
         # 1) detected eddy center inside the polygon
-        try:
-            is_in_polygon = check_if_in_polygon(ec_lon, ec_lat, xdata, ydata)
-        except Exception as e:
-            is_in_polygon = False
-
-        if not is_in_polygon:
+        if not check_if_in_polygon(lon_eddy_center, lat_eddy_center, isoline_x, isoline_y):
             continue
 
         # 2) closed contour
@@ -258,7 +243,7 @@ def get_eddy_contour(u, v, lon, lat, ec_lon, ec_lat, d_thres):
             eddy_lim = [contour_x, contour_y]
             break
 
-    eddy_i, eddy_j, eddy_mask =  None, None, None
+    eddy_i, eddy_j, eddy_mask, winding =  None, None, None, None
     if eddy_lim:
         mask = inpolygon2D(lon.flatten(), lat.flatten(), eddy_lim[0], eddy_lim[1])
         eddy_mask = mask.reshape(np.shape(lon))
@@ -268,7 +253,7 @@ def get_eddy_contour(u, v, lon, lat, ec_lon, ec_lat, d_thres):
     return eddy_i, eddy_j, eddy_mask, winding, isolines
 
 
-def build_streamlines(segments, tol=1e0):
+def build_streamlines_from_segments(segments, tol=1e0):
     # Each segment is a (2, 2) array: [[x1, y1], [x2, y2]]
     start_points = np.array([seg[0] for seg in segments])
     used = np.zeros(len(segments), dtype=bool)
@@ -277,7 +262,6 @@ def build_streamlines(segments, tol=1e0):
     start_points_tree = cKDTree(start_points)
 
     streamlines = []
-
     for i in range(len(segments)):
         if used[i]:
             continue
@@ -320,7 +304,7 @@ def generate_streamlines( u, v, lat, lon, level_density = 6):
             seen.add(key)
             unique_segments.append(rounded)
 
-    streamlines = build_streamlines(unique_segments)
+    streamlines = build_streamlines_from_segments(unique_segments)
     isolines_max = [line[:, 1].max() for line in streamlines]
 
     return streamlines, isolines_max
@@ -379,106 +363,45 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, dxC, dyC):
             # ------------
             # 1.a) reversal of direction in v
             s = np.sign(v_slice)
-            index_v_reversal = np.where((np.diff(s) != 0) & (~np.isnan(np.diff(s))))[0]
-            for ii in range(len(index_v_reversal)-1):
-                idx_v = index_v_reversal[ii]
+            indexes_all_v_reversal = np.where((np.diff(s) != 0) & (~np.isnan(np.diff(s))))[0]
+            for ii in range(len(indexes_all_v_reversal)-1):
+                idx_v = indexes_all_v_reversal[ii]
 
                 # 1.b) v increase "a" points away from reversal
-                v0 = v_slice[idx_v]
-                v_next = v_slice[idx_v + 1]
-                v_minus_a = v_slice[idx_v - a]
-                v_plus_a = v_slice[idx_v + 1 + a]
-                if (v0 >= 0) & (v_minus_a > v0) & (v_plus_a < v_next):
-                    # anti-cyclonic
-                   var = -1
-                elif (v0 < 0) & (v_minus_a < v0) & (v_plus_a > v_next):
-                    # cyclonic
-                    var = 1
-                else:
-                    # 1.b) not fulfilled
+                criteria_1b_fulfilled, is_clockwise = check_v_increase(a, idx_v, v_slice)
+                if not criteria_1b_fulfilled:
                     continue
 
-                # ------------
                 # 2.a) reversal of direction in u and b) u increase "a" points away from reversal
-                # anticyclonic
-                if var == -1:
-                    if ((u[i-a, idx_v] <= 0) & (u[i - a, idx_v] <= u[i - 1, idx_v])
-                         & (u[i+a, idx_v] >= 0) & (u[i + a, idx_v] >= u[i + 1, idx_v])):
-                        var = -1
-                    elif ((u[i-a, idx_v + 1] <= 0) & (u[i - a, idx_v + 1] <= u[i - 1, idx_v + 1])
-                           & (u[i+a, idx_v + 1] >= 0) & (u[i + a, idx_v + 1] >= u[i + 1, idx_v + 1])):
-                        var = -1
-                    else:
-                        # 2. not fulfilled
-                        continue
-                # cyclonic
-                elif var == 1:
-                    if ((u[i-a, idx_v] >= 0) & (u[i - a, idx_v] >= u[i - 1, idx_v])
-                         & (u[i+a, idx_v] <= 0) & (u[i + a, idx_v] <= u[i + 1, idx_v])):
-                        var = 1
-                    elif ((u[i-a, idx_v + 1] >= 0) & (u[i - a, idx_v + 1] >= u[i - 1, idx_v + 1])
-                       & (u[i+a, idx_v + 1] <= 0) & (u[i + a, idx_v + 1] <= u[i + 1, idx_v + 1])):
-                        var = 1
-                    else:
-                        # 2. not fulfilled
-                        continue
+                criteria_2_fulfilled, is_clockwise = check_u_reversal_and_increase(a, i, idx_v, is_clockwise, u)
+                if not criteria_2_fulfilled:
+                    continue
 
-                # ------------
                 # 3) Eddy center placed at the velocity minimum within the searching area "b" points
                 # around the points that satisfy the first two constraints
+                s_speed, s_lat, s_lon = define_search_eddy_center_area(b, idx_v, i, speed, lat, lon)
+                idx_x_eddy, idx_y_eddy, lat_eddy_center, lon_eddy_center = find_potential_eddy_center(s_speed, s_lat, s_lon)
 
-                # find the velocity minimum within the searching area defined by
-                # "b" around the potential eddy center
-
-                # velocity magnitude, latitude and longitude within the searching area
-                srch = speed[i-b:i+b, idx_v - b:idx_v + 1 + b]
-                slat = lat[i-b:i+b, idx_v - b:idx_v + 1 + b]
-                slon = lon[i-b:i+b, idx_v - b:idx_v + 1 + b]
-                # position of the velocity minimum within the searching area
-                idx_x_eddy, idx_y_eddy = np.where(srch == np.nanmin(srch))
-
-                if len(idx_x_eddy) != 1:
-                    idx_x_eddy=idx_x_eddy[0]
-                    idx_y_eddy=idx_y_eddy[0]
-
-                if eddy_already_detected(eddi, slon[idx_x_eddy, idx_y_eddy], slat[idx_x_eddy, idx_y_eddy]):
+                if eddy_already_detected(eddi, lon_eddy_center, lat_eddy_center):
                     continue
 
-                # second searching area centered around the velocity minimum
-                srch2 = speed[int(max((i-b)+(idx_x_eddy-1)-b, 0)):int(min((i-b)+(idx_x_eddy-1)+b, len(speed[:,0]))),
-                        int(max((idx_v - b) + (idx_y_eddy - 1) - b, 0)):int(min((idx_v - b) + (idx_y_eddy - 1) + b, len(speed[0,:])))]
-                # if the two minima coincide then it is a local minima
-                if (np.nanmin(srch2) != np.nanmin(srch)):
+                is_local_minimum = check_if_local_minimum(b, i, idx_v, idx_x_eddy, idx_y_eddy, speed, s_speed)
+                if not is_local_minimum:
                     continue
 
                 # ------------
-                # 4) A closed contour exist around the potential eddy center with a valid winding angle (Chaigneau 2008)
-                # check the rotation of the vectors along the boundary of the area
-                # "a-1" around the points which satisfy the first three constraints
+                # 4) A closed-ish contour exist around the potential eddy center with a valid winding angle (Chaigneau 2008)
                 # indices of the estimated center in the large domain
-                i1, i2 = np.where((lat == slat[idx_x_eddy, idx_y_eddy]) & (lon == slon[idx_x_eddy, idx_y_eddy]))
+                dxC_large, dyC_large, lat_large, lon_large, u_large, v_large = define_contour_search_area(a, bounds,
+                                                                                                          dxC, dyC, lat,
+                                                                                                          lat_eddy_center,
+                                                                                                          lon,
+                                                                                                          lon_eddy_center,
+                                                                                                          rad, u, v)
 
-                u_large = u[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
-                            int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                v_large = v[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
-                            int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                speed_large = speed[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
-                                    int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                lon_large = lon[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
-                                int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                lat_large = lat[int(max(i1-(rad*a), 1)):int(min(i1+(rad*a), bounds[0])),
-                                int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                dxC_large = dxC[int(max(i1 - (rad * a), 1)):int(min(i1 + (rad * a), bounds[0])),
-                                int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-                dyC_large = dyC[int(max(i1 - (rad * a), 1)):int(min(i1 + (rad * a), bounds[0])),
-                                int(max(i2-(rad*a), 1)):int(min(i2+(rad*a), bounds[1]))]
-
-                eddy_i, eddy_j, eddy_mask, winding, isolines = get_eddy_contour(u_large,
-                                                                                v_large,
-                                                                                lon_large,
-                                                                                lat_large,
-                                                                                slon[idx_x_eddy, idx_y_eddy],
-                                                                                slat[idx_x_eddy, idx_y_eddy],
+                eddy_i, eddy_j, eddy_mask, winding, isolines = get_eddy_contour(u_large, v_large,
+                                                                                lon_large, lat_large,
+                                                                                lon_eddy_center, lat_eddy_center,
                                                                                 d_thres)
 
                 if eddy_i is None:
@@ -486,10 +409,12 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, dxC, dyC):
                     eddi[e] = {}
                     eddi[e]['valid_eddy'] = -1
                     eddi[e]['winding'] = winding
-                    eddi[e]["lon"] = slon[idx_x_eddy, idx_y_eddy]
-                    eddi[e]["lat"] = slat[idx_x_eddy, idx_y_eddy]
+                    eddi[e]["lon"] = lon_eddy_center
+                    eddi[e]["lat"] = lat_eddy_center
                     eddi[e]['time'] = U.isel(time=t).time.values
                     eddi[e]['isolines'] = isolines
+                    eddi[e]['eddy_j'] = []
+                    eddi[e]['eddy_i'] = []
                     e += 1
                     continue
 
@@ -498,8 +423,8 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, dxC, dyC):
 
                 eddi[e] = {}
                 eddi[e]['valid_eddy'] = 1
-                eddi[e]["lon"] = slon[idx_x_eddy, idx_y_eddy]
-                eddi[e]["lat"] = slat[idx_x_eddy, idx_y_eddy]
+                eddi[e]["lon"] = lon_eddy_center
+                eddi[e]["lat"] = lat_eddy_center
                 j_min = (data.lat.where(data.lat == np.nanmin(lat_large), other=0) ** 2).argmax().values
                 i_min = (data.lon.where(data.lon == np.nanmin(lon_large), other=0) ** 2).argmax().values
                 eddi[e]['eddy_j'] = eddy_j + j_min
@@ -510,20 +435,121 @@ def detect_UV_core(data, det_param, U, V, SPEED, t, dxC, dyC):
                 eddi[e]['scale'] = np.array([np.sqrt(eddi[e]['area'] / np.pi)])
                 eddi[e]['winding'] = winding
                 if det_param["hemi"] == "north":
-                    if var == -1:
+                    if is_clockwise:
                         eddi[e]['type'] = "anticyclonic"
-                    elif var ==1:
+                    elif not is_clockwise:
                         eddi[e]['type'] = "cyclonic"
                 elif det_param["hemi"] == "south":
-                    if var == -1:
+                    if is_clockwise:
                         eddi[e]['type'] = "cyclonic"
-                    elif var ==1:
+                    elif not is_clockwise:
                         eddi[e]['type'] = "anticyclonic"
                 e += 1
         except Exception as e:
             continue
 
     return eddi
+
+
+def define_contour_search_area(a, bounds, dxc, dyc, lat, lat_eddy_center, lon, lon_eddy_center, rad, u, v):
+    i1, i2 = np.where((lat == lat_eddy_center) & (lon == lon_eddy_center))
+    u_large = u[int(max(i1 - (rad * a), 1)):int(min(i1 + (rad * a), bounds[0])),
+              int(max(i2 - (rad * a), 1)):int(min(i2 + (rad * a), bounds[1]))]
+    v_large = v[int(max(i1 - (rad * a), 1)):int(min(i1 + (rad * a), bounds[0])),
+              int(max(i2 - (rad * a), 1)):int(min(i2 + (rad * a), bounds[1]))]
+    lon_large = lon[int(max(i1 - (rad * a), 1)):int(min(i1 + (rad * a), bounds[0])),
+                int(max(i2 - (rad * a), 1)):int(min(i2 + (rad * a), bounds[1]))]
+    lat_large = lat[int(max(i1 - (rad * a), 1)):int(min(i1 + (rad * a), bounds[0])),
+                int(max(i2 - (rad * a), 1)):int(min(i2 + (rad * a), bounds[1]))]
+    dxc_large = dxc[int(max(i1 - (rad * a), 1)):int(min(i1 + (rad * a), bounds[0])),
+                int(max(i2 - (rad * a), 1)):int(min(i2 + (rad * a), bounds[1]))]
+    dyc_large = dyc[int(max(i1 - (rad * a), 1)):int(min(i1 + (rad * a), bounds[0])),
+                int(max(i2 - (rad * a), 1)):int(min(i2 + (rad * a), bounds[1]))]
+
+    return dxc_large, dyc_large, lat_large, lon_large, u_large, v_large
+
+
+def check_if_local_minimum(b, i, idx_v, idx_x_eddy, idx_y_eddy, speed, s_speed):
+    # second searching area centered around the velocity minimum
+    is_local_minimum = True
+    s_speed_2 = speed[
+            int(max((i - b) + (idx_x_eddy - 1) - b, 0)):int(min((i - b) + (idx_x_eddy - 1) + b, len(speed[:, 0]))),
+            int(max((idx_v - b) + (idx_y_eddy - 1) - b, 0)):int(
+                min((idx_v - b) + (idx_y_eddy - 1) + b, len(speed[0, :])))]
+    # if the two minima coincide then it is a local minima
+    if (np.nanmin(s_speed_2) != np.nanmin(s_speed)):
+        is_local_minimum = False
+
+    return is_local_minimum
+
+def define_search_eddy_center_area(b, idx_v, i, speed, lat, lon):
+    # find the velocity minimum within the searching area defined by
+    # "b" around the potential eddy center
+    # velocity magnitude, latitude and longitude within the searching area
+    s_speed = speed[i - b:i + b, idx_v - b:idx_v + 1 + b]
+    s_lat = lat[i - b:i + b, idx_v - b:idx_v + 1 + b]
+    s_lon = lon[i - b:i + b, idx_v - b:idx_v + 1 + b]
+
+    return s_speed, s_lat, s_lon
+
+
+def find_potential_eddy_center(s_speed, s_lat, s_lon):
+    # position of the velocity minimum within the searching area
+    idx_x_eddy, idx_y_eddy = np.where(s_speed == np.nanmin(s_speed))
+    if len(idx_x_eddy) != 1:
+        idx_x_eddy = idx_x_eddy[0]
+        idx_y_eddy = idx_y_eddy[0]
+    lon_eddy_center, lat_eddy_center = s_lon[idx_x_eddy, idx_y_eddy], s_lat[idx_x_eddy, idx_y_eddy]
+
+    return idx_x_eddy, idx_y_eddy, lat_eddy_center, lon_eddy_center
+
+
+def check_u_reversal_and_increase(a, i, idx_v, is_clockwise, u):
+    criteria_2_fulfilled = True
+    # anticyclonic
+    if is_clockwise:
+        if ((u[i - a, idx_v] <= 0) & (u[i - a, idx_v] <= u[i - 1, idx_v])
+                & (u[i + a, idx_v] >= 0) & (u[i + a, idx_v] >= u[i + 1, idx_v])):
+            is_clockwise = True
+        elif ((u[i - a, idx_v + 1] <= 0) & (u[i - a, idx_v + 1] <= u[i - 1, idx_v + 1])
+              & (u[i + a, idx_v + 1] >= 0) & (u[i + a, idx_v + 1] >= u[i + 1, idx_v + 1])):
+            is_clockwise = True
+        else:
+            # 2. not fulfilled
+            criteria_2_fulfilled = False
+    # cyclonic
+    elif not is_clockwise:
+        if ((u[i - a, idx_v] >= 0) & (u[i - a, idx_v] >= u[i - 1, idx_v])
+                & (u[i + a, idx_v] <= 0) & (u[i + a, idx_v] <= u[i + 1, idx_v])):
+            is_clockwise = False
+        elif ((u[i - a, idx_v + 1] >= 0) & (u[i - a, idx_v + 1] >= u[i - 1, idx_v + 1])
+              & (u[i + a, idx_v + 1] <= 0) & (u[i + a, idx_v + 1] <= u[i + 1, idx_v + 1])):
+            is_clockwise = False
+        else:
+            # 2. not fulfilled
+            criteria_2_fulfilled = False
+
+    return criteria_2_fulfilled, is_clockwise
+
+
+def check_v_increase(a, idx_v, v_slice):
+    v0 = v_slice[idx_v]
+    v_next = v_slice[idx_v + 1]
+    v_minus_a = v_slice[idx_v - a]
+    v_plus_a = v_slice[idx_v + 1 + a]
+    criteria_1b_fulfilled = True
+    if (v0 >= 0) & (v_minus_a > v0) & (v_plus_a < v_next):
+        # anti-cyclonic in Northern Hemisphere
+        is_clockwise = True
+    elif (v0 < 0) & (v_minus_a < v0) & (v_plus_a > v_next):
+        # cyclonic in Northern Hemisphere
+        is_clockwise = False
+    else:
+        # 1.b) not fulfilled
+        criteria_1b_fulfilled = False
+        is_clockwise = True # dummy value
+
+    return criteria_1b_fulfilled, is_clockwise
 
 
 def check_input_validity(use_bags, use_mp, det_param, data):

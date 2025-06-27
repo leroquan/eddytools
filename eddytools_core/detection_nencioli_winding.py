@@ -127,7 +127,8 @@ def normalize_angle(angle):
     return angle
 
 
-def check_winding_angle(isoline_x, isoline_y, winding_thres=360, baddir_thres=90, d_thres=500):
+def check_winding_angle(isoline_x, isoline_y, lon_eddy_center, lat_eddy_center,
+                        winding_thres=360, baddir_thres=90, d_thres=500):
     """
     Detects eddies in a streamline by analyzing its winding angle.
 
@@ -168,10 +169,11 @@ def check_winding_angle(isoline_x, isoline_y, winding_thres=360, baddir_thres=90
                 contour_y = isoline_y[i+1:]
                 break
             if dist_to_start < d_thres:
-                eddy = True
-                contour_x = isoline_x[i:]
-                contour_y = isoline_y[i:]
-                min_dist = dist_to_start
+                if check_if_in_polygon(lon_eddy_center, lat_eddy_center, contour_x, contour_y):
+                    eddy = True
+                    contour_x = isoline_x[i:]
+                    contour_y = isoline_y[i:]
+                    min_dist = dist_to_start
 
     return eddy, winding, contour_x, contour_y
 
@@ -230,14 +232,9 @@ def get_eddy_contour(u, v, lon, lat, lon_eddy_center, lat_eddy_center, d_thres):
         if not check_if_in_polygon(lon_eddy_center, lat_eddy_center, isoline_x, isoline_y):
             continue
 
-        # 2) closed contour
-        #if not ((xdata[0] == xdata[-1]) & (ydata[0] == ydata[-1])):
-        #    continue
-
-        # 3) valid winding angle
-        winding = 0
-        valid_winding, winding, contour_x, contour_y = check_winding_angle(xdata, ydata, winding_thres=360,
-                                                                           baddir_thres=90, d_thres=d_thres)
+        # 2) valid winding angle and 3) closed contour
+        valid_winding, winding, contour_x, contour_y = check_winding_angle(isoline_x, isoline_y, lon_eddy_center, lat_eddy_center,
+                                                                           winding_thres=360, baddir_thres=90, d_thres=d_thres)
         if valid_winding:
             # Found the eddy contour
             eddy_lim = [contour_x, contour_y]

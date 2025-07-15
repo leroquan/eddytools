@@ -228,9 +228,6 @@ def get_eddy_indeces(lon, lat, ec_lon, ec_lat, psi, vel):
         try:
             inpo = inpolygon(ec_lon, ec_lat, xdata, ydata)
         except Exception as e:
-            #print(f"ec_lon={ec_lon}, ec_lat={ec_lat}")
-            #print('Error in inpolygon')
-            #print(f'Error: {e}')
             inpo = False
         if (((xdata[0] == xdata[-1]) & (ydata[0] == ydata[-1])) & inpo):
             #print('Contour is closed.')
